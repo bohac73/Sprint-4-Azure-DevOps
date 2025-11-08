@@ -84,10 +84,175 @@ function Test-AzureConnection {
     Write-Log "Verificando conexão com Azure..." "Info"
     
     try {
-        $context = Get-AzContext
+        # Verifica se o módulo Az está instalado
+        $azModule = Get-Module -ListAvailable -Name Az.Accounts
+        if ($null -eq $azModule) {
+            Write-Log "Módulo Az.Accounts não encontrado. Tentando importar..." "Warning"
+            Import-Module Az.Accounts -ErrorAction Stop
+            Write-Log "Módulo Az.Accounts importado com sucesso" "Success"
+        }
+        
+        # Tenta obter o contexto atual do Azure
+        $context = Get-AzContext -ErrorAction SilentlyContinue
+        
         if ($null -eq $context) {
             Write-Log "Não há contexto do Azure. Tentando fazer login..." "Warning"
-            throw "Sem contexto do Azure"
+            
+            # Detecta se está rodando no Azure DevOps
+            $isAzureDevOps = $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI -ne $null
+            
+            if ($isAzureDevOps) {
+                Write-Log "Detectado ambiente Azure DevOps" "Info"
+                
+                # Primeiro, tenta verificar se o Azure CLI já está autenticado (comum quando usa task Azure CLI)
+                $azCliAvailable = Get-Command az -ErrorAction SilentlyContinue
+                if ($null -ne $azCliAvailable) {
+                    Write-Log "Verificando se Azure CLI está autenticado..." "Info"
+                    $azAccountOutput = az account show 2>&1
+                    
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Log "Azure CLI está autenticado. Tentando importar contexto para PowerShell..." "Info"
+                        try {
+                            # Tenta importar o contexto do Azure CLI
+                            $azureProfilePath = Join-Path $env:USERPROFILE ".azure\azureProfile.json"
+                            if (Test-Path $azureProfilePath) {
+                                $context = Import-AzContext -Path $azureProfilePath -ErrorAction SilentlyContinue
+                                if ($null -ne $context) {
+                                    Write-Log "Contexto do Azure CLI importado com sucesso para PowerShell" "Success"
+                                }
+                            }
+                            
+                            # Se não conseguiu importar, tenta usar o método alternativo
+                            if ($null -eq $context) {
+                                # Obtém informações da conta do Azure CLI
+                                $azAccountJson = az account show | ConvertFrom-Json
+                                if ($azAccountJson) {
+                                    Write-Log "Obtendo credenciais do Azure CLI para autenticar PowerShell..." "Info"
+                                    # Tenta autenticar usando as mesmas credenciais
+                                    # No Azure DevOps, o Azure CLI já está autenticado via Service Connection
+                                    # Precisamos obter as credenciais das variáveis de ambiente
+                                }
+                            }
+                        }
+                        catch {
+                            Write-Log "Não foi possível importar contexto do Azure CLI: $($_.Exception.Message)" "Warning"
+                        }
+                    }
+                }
+                
+                # Se ainda não tem contexto, tenta autenticar usando Service Principal
+                if ($null -eq $context) {
+                    Write-Log "Tentando autenticar usando Service Principal do Azure DevOps..." "Info"
+                    
+                    # No Azure DevOps, quando usando task "Azure PowerShell", a autenticação já deve estar feita
+                    # Mas se não estiver, tenta usar as variáveis de ambiente da Service Connection
+                    # Variáveis podem ter diferentes nomes dependendo da versão da task
+                    # Tenta obter das variáveis de ambiente (múltiplos formatos possíveis)
+                    $servicePrincipalId = if (-not [string]::IsNullOrWhiteSpace($env:servicePrincipalId)) { 
+                        $env:servicePrincipalId 
+                    } elseif (-not [string]::IsNullOrWhiteSpace($env:SERVICE_PRINCIPAL_ID)) { 
+                        $env:SERVICE_PRINCIPAL_ID 
+                    } else { 
+                        $env:AZURE_CLIENT_ID 
+                    }
+                    
+                    $servicePrincipalKey = if (-not [string]::IsNullOrWhiteSpace($env:servicePrincipalKey)) { 
+                        $env:servicePrincipalKey 
+                    } elseif (-not [string]::IsNullOrWhiteSpace($env:SERVICE_PRINCIPAL_KEY)) { 
+                        $env:SERVICE_PRINCIPAL_KEY 
+                    } else { 
+                        $env:AZURE_CLIENT_SECRET 
+                    }
+                    
+                    $tenantId = if (-not [string]::IsNullOrWhiteSpace($env:tenantId)) { 
+                        $env:tenantId 
+                    } elseif (-not [string]::IsNullOrWhiteSpace($env:TENANT_ID)) { 
+                        $env:TENANT_ID 
+                    } else { 
+                        $env:AZURE_TENANT_ID 
+                    }
+                    
+                    $subscriptionId = if (-not [string]::IsNullOrWhiteSpace($env:subscriptionId)) { 
+                        $env:subscriptionId 
+                    } elseif (-not [string]::IsNullOrWhiteSpace($env:SUBSCRIPTION_ID)) { 
+                        $env:SUBSCRIPTION_ID 
+                    } else { 
+                        $env:AZURE_SUBSCRIPTION_ID 
+                    }
+                    
+                    # Se encontrou as credenciais, tenta autenticar
+                    if (-not [string]::IsNullOrWhiteSpace($servicePrincipalId) -and 
+                        -not [string]::IsNullOrWhiteSpace($servicePrincipalKey) -and 
+                        -not [string]::IsNullOrWhiteSpace($tenantId) -and 
+                        -not [string]::IsNullOrWhiteSpace($subscriptionId)) {
+                        
+                        Write-Log "Autenticando usando Service Principal..." "Info"
+                        
+                        try {
+                            $securePassword = ConvertTo-SecureString $servicePrincipalKey -AsPlainText -Force
+                            $psCredential = New-Object System.Management.Automation.PSCredential($servicePrincipalId, $securePassword)
+                            
+                            Connect-AzAccount `
+                                -ServicePrincipal `
+                                -Credential $psCredential `
+                                -TenantId $tenantId `
+                                -SubscriptionId $subscriptionId `
+                                -Environment "AzureCloud" `
+                                -ErrorAction Stop | Out-Null
+                            
+                            Write-Log "Autenticação via Service Principal concluída" "Success"
+                            
+                            # Obtém o contexto novamente após autenticação
+                            $context = Get-AzContext -ErrorAction SilentlyContinue
+                        }
+                        catch {
+                            Write-Log "Erro ao autenticar com Service Principal: $($_.Exception.Message)" "Error"
+                            throw "Falha na autenticação com Service Principal. Verifique as credenciais da Service Connection."
+                        }
+                    }
+                    else {
+                        Write-Log "Credenciais de Service Principal não encontradas nas variáveis de ambiente" "Warning"
+                        Write-Log "Certifique-se de que está usando uma task 'Azure PowerShell' ou 'Azure CLI' com Service Connection configurada" "Warning"
+                        throw "Não foi possível encontrar credenciais para autenticação no Azure DevOps."
+                    }
+                }
+            }
+            else {
+                # Ambiente local ou outro contexto
+                Write-Log "Ambiente local detectado. Tentando autenticar via Azure CLI..." "Info"
+                
+                # Verifica se Azure CLI está disponível
+                $azCliAvailable = Get-Command az -ErrorAction SilentlyContinue
+                
+                if ($null -ne $azCliAvailable) {
+                    $azAccount = az account show 2>&1
+                    
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Log "Azure CLI está autenticado" "Info"
+                        # Tenta importar o contexto do Azure CLI
+                        try {
+                            $azureProfilePath = Join-Path $env:USERPROFILE ".azure\azureProfile.json"
+                            if (Test-Path $azureProfilePath) {
+                                $context = Import-AzContext -Path $azureProfilePath -ErrorAction SilentlyContinue
+                                if ($null -ne $context) {
+                                    Write-Log "Contexto do Azure CLI importado com sucesso" "Success"
+                                }
+                            }
+                        }
+                        catch {
+                            Write-Log "Não foi possível importar contexto do Azure CLI: $($_.Exception.Message)" "Warning"
+                        }
+                    }
+                }
+                
+                if ($null -eq $context) {
+                    throw "Não foi possível autenticar. Execute 'az login' ou 'Connect-AzAccount' antes de executar o script."
+                }
+            }
+        }
+        
+        if ($null -eq $context) {
+            throw "Não foi possível estabelecer conexão com Azure após tentativas de autenticação."
         }
         
         Write-Log "Conectado ao Azure como: $($context.Account.Id)" "Success"
@@ -96,6 +261,16 @@ function Test-AzureConnection {
     }
     catch {
         Write-Log "Erro ao verificar conexão com Azure: $($_.Exception.Message)" "Error"
+        Write-Log "Detalhes do erro: $($_.Exception.GetType().FullName)" "Error"
+        
+        # Log adicional para debug
+        if ($env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI) {
+            Write-Log "Variáveis de ambiente disponíveis:" "Info"
+            Write-Log "  AZURE_CLIENT_ID: $([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID))" "Info"
+            Write-Log "  AZURE_TENANT_ID: $([string]::IsNullOrWhiteSpace($env:AZURE_TENANT_ID))" "Info"
+            Write-Log "  AZURE_SUBSCRIPTION_ID: $([string]::IsNullOrWhiteSpace($env:AZURE_SUBSCRIPTION_ID))" "Info"
+        }
+        
         return $false
     }
 }
