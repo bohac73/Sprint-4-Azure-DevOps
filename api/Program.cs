@@ -15,6 +15,33 @@ using api.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Função helper para construir connection string a partir de variáveis de ambiente
+// Prioriza variáveis de ambiente individuais, mas permite usar ConnectionStrings__DefaultConnection também
+static string GetDatabaseConnectionString(IConfiguration configuration)
+{
+    // Primeiro, tenta usar a connection string completa se estiver definida como variável de ambiente
+    var connectionStringFromEnv = configuration.GetConnectionString("DefaultConnection");
+    
+    // Se a connection string não contém placeholders ${}, retorna ela diretamente
+    if (!string.IsNullOrEmpty(connectionStringFromEnv) && !connectionStringFromEnv.Contains("${"))
+    {
+        return connectionStringFromEnv;
+    }
+    
+    // Caso contrário, constrói a connection string a partir de variáveis de ambiente individuais
+    var dbHost = Environment.GetEnvironmentVariable("DB_HOST") ?? configuration["DB_HOST"] ?? "localhost";
+    var dbPort = Environment.GetEnvironmentVariable("DB_PORT") ?? configuration["DB_PORT"] ?? "5432";
+    var dbName = Environment.GetEnvironmentVariable("DB_NAME") ?? configuration["DB_NAME"] ?? "techlab";
+    var dbUser = Environment.GetEnvironmentVariable("DB_USER") ?? configuration["DB_USER"] ?? "postgres";
+    var dbPassword = Environment.GetEnvironmentVariable("DB_PASSWORD") ?? configuration["DB_PASSWORD"] ?? "postgres";
+    
+    var connectionString = $"Host={dbHost};Port={dbPort};Database={dbName};Username={dbUser};Password={dbPassword}";
+    
+    Console.WriteLine($"[Startup] Connection string construída (ocultando senha): Host={dbHost};Port={dbPort};Database={dbName};Username={dbUser};Password=***");
+    
+    return connectionString;
+}
+
 // Add services to the container.
 builder.Services.AddScoped<MotoService>();
 builder.Services.AddScoped<PatioService>();
@@ -44,9 +71,11 @@ builder.Services.AddApiVersioning(options =>
 // Em ambiente de teste, o WebApplicationFactory configurará InMemory
 if (!builder.Environment.IsEnvironment("Testing"))
 {
+    var connectionString = GetDatabaseConnectionString(builder.Configuration);
+    
     builder.Services.AddDbContext<AppDbContext>(options =>
         options.UseNpgsql(
-            builder.Configuration.GetConnectionString("DefaultConnection"),
+            connectionString,
             x => x.MigrationsAssembly("data")));
 }
 
@@ -104,15 +133,28 @@ else
 builder.Services.AddAuthorization();
 
 // Configuração de Health Checks
-builder.Services.AddHealthChecks()
-    .AddNpgSql(
-        connectionString: builder.Configuration.GetConnectionString("DefaultConnection")!,
-        name: "PostgreSQL Database",
-        failureStatus: HealthStatus.Unhealthy,
-        tags: new[] { "db", "postgresql", "ready" })
-    .AddCheck("API Health", () => 
-        HealthCheckResult.Healthy("API está respondendo"), 
-        tags: new[] { "api", "live" });
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    var healthCheckConnectionString = GetDatabaseConnectionString(builder.Configuration);
+    
+    builder.Services.AddHealthChecks()
+        .AddNpgSql(
+            connectionString: healthCheckConnectionString,
+            name: "PostgreSQL Database",
+            failureStatus: HealthStatus.Unhealthy,
+            tags: new[] { "db", "postgresql", "ready" })
+        .AddCheck("API Health", () => 
+            HealthCheckResult.Healthy("API está respondendo"), 
+            tags: new[] { "api", "live" });
+}
+else
+{
+    // Em ambiente de teste, apenas health check da API
+    builder.Services.AddHealthChecks()
+        .AddCheck("API Health", () => 
+            HealthCheckResult.Healthy("API está respondendo"), 
+            tags: new[] { "api", "live" });
+}
 
 builder.Services.AddSwaggerGen(c =>
 {
