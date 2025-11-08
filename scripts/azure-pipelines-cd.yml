@@ -1,0 +1,27 @@
+trigger: none
+
+resources:
+  pipelines:
+  - pipeline: CI
+    source: 'Sprint4-CI-Pipeline'
+    trigger: true
+
+variables:
+  azureSubscription: 'your-azure-service-connection'
+  webAppName: 'sprint4-webapp-$(Build.BuildId)'
+  acrName: 'youracrname'
+
+stages:
+- stage: Deploy
+  jobs:
+  - deployment: DeployWebApp
+    environment: 'production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureWebAppContainer@1
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              appName: '$(webAppName)'
+              containers: '$(acrName).azurecr.io/$(imageRepository):$(tag)'
