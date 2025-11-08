@@ -1,28 +1,18 @@
 trigger:
+  - main
 
-- main
- 
 pool:
-
   vmImage: ubuntu-latest
- 
+
 steps:
- 
-- task: Docker@2
-
-  inputs:
-
-    containerRegistry: 'acrrm554826'
-
-    repository: 'acr'
-
-    command: 'buildAndPush'
-
-    Dockerfile: '**/Dockerfile'
-
-    tags: |
-
-      $(Build.BuildId)
-
-      latest
- 
+  - task: Docker@2
+    displayName: 'Build and Push Docker Image'
+    inputs:
+      containerRegistry: 'acrrm554826'
+      repository: 'acr'
+      command: 'buildAndPush'
+      Dockerfile: 'api/Dockerfile'
+      buildContext: '.'
+      tags: |
+        $(Build.BuildId)
+        latest
