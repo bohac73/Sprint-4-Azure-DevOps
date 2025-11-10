@@ -1,4 +1,4 @@
-# TechLab Api DotNet
+# TechLab Api .Net
 
 **TechLab Api DotNet** é uma API desenvolvida em .NET para o sistema de **Gerenciamento de pátios**, com foco no controle de localização de motos utilizando rastreadores GPS.  
 A solução é modularizada em camadas e utiliza **Entity Framework Core com PostgreSQL** rodando em **Docker Compose**. Conta também com documentação interativa via Swagger.
